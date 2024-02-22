@@ -129,6 +129,7 @@ class MultiheadAttention(Module, strict=True):
     output_size: int = field(static=True)
     qk_size: int = field(static=True)
     vo_size: int = field(static=True)
+    num_kv_heads: int = field(static=True)
     use_query_bias: bool = field(static=True)
     use_key_bias: bool = field(static=True)
     use_value_bias: bool = field(static=True)
@@ -143,6 +144,7 @@ class MultiheadAttention(Module, strict=True):
         output_size: Optional[int] = None,
         qk_size: Optional[int] = None,
         vo_size: Optional[int] = None,
+        num_kv_heads: Optional[int] = None,
         use_query_bias: bool = False,
         use_key_bias: bool = False,
         use_value_bias: bool = False,
@@ -164,6 +166,10 @@ class MultiheadAttention(Module, strict=True):
             Defaults to `query_size // num_heads`.
         - `vo_size`: Number of channels to compare attention-weighted value and output
             over, per head. Defaults to `query_size // num_heads`.
+        - `num_kv_heads`: Number of heads to use for keys and queries. If None, defaults
+            to num_heads per normal multi-head attention. Values less than num_heads
+            reopresent grouped-query attention (GQA) and 1 corresponds to multi-query
+            attention (MQA).
         - `use_query_bias`: Whether to use a bias term in the query projections.
         - `use_key_bias`: Whether to use a bias term in the key projections.
         - `use_value_bias`: Whether to use a bias term in the value projections.
@@ -182,10 +188,12 @@ class MultiheadAttention(Module, strict=True):
             key_size = query_size
         if value_size is None:
             value_size = query_size
+        if num_kv_heads is None:
+            num_kv_heads = num_heads
         if qk_size is None:
-            qk_size = query_size // num_heads
+            qk_size = query_size // num_kv_heads
         if vo_size is None:
-            vo_size = query_size // num_heads
+            vo_size = query_size // num_kv_heads
         if output_size is None:
             output_size = query_size
 
@@ -193,10 +201,10 @@ class MultiheadAttention(Module, strict=True):
             query_size, num_heads * qk_size, use_bias=use_query_bias, key=qkey
         )
         self.key_proj = Linear(
-            key_size, num_heads * qk_size, use_bias=use_key_bias, key=kkey
+            key_size, num_kv_heads * qk_size, use_bias=use_key_bias, key=kkey
         )
         self.value_proj = Linear(
-            value_size, num_heads * vo_size, use_bias=use_value_bias, key=vkey
+            value_size, num_kv_heads * vo_size, use_bias=use_value_bias, key=vkey
         )
         self.output_proj = Linear(
             num_heads * vo_size, output_size, use_bias=use_output_bias, key=okey
@@ -275,6 +283,7 @@ class MultiheadAttention(Module, strict=True):
         )
         keys = None if key is None else jax.random.split(key, query_heads.shape[1])
         if mask is not None and mask.ndim == 3:
+            # TODO: this is going to have to change...
             # Batch `mask` and `keys` down their 0-th dimension.
             attn = jax.vmap(attn_fn, in_axes=1, out_axes=1)(
                 query_heads, key_heads, value_heads, mask=mask, key=keys
